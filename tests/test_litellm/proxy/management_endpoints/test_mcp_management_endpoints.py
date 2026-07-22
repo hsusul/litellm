@@ -761,6 +761,94 @@ class TestListMCPServers:
             assert result.status == "healthy"
 
     @pytest.mark.asyncio
+    async def test_fetch_single_mcp_server_preserves_upstream_resource_for_admin(self):
+        """upstream_resource is non-secret admin config, so the admin edit form must receive its real
+        value to change or clear it; secrets sharing the blob are still dropped."""
+        mock_server = generate_mock_mcp_server_db_record(server_id="server-ur", alias="UR")
+        mock_server.credentials = {"client_secret": "top-secret", "upstream_resource": "api://audience"}
+
+        mock_prisma_client = MagicMock()
+        mock_health_result = generate_mock_mcp_server_db_record(server_id="server-ur", alias="UR")
+        mock_health_result.status = "healthy"
+        mock_health_result.last_health_check = datetime.now()
+        mock_health_result.health_check_error = None
+        mock_user_auth = generate_mock_user_api_key_auth(user_role=LitellmUserRoles.PROXY_ADMIN)
+
+        with (
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.get_prisma_client_or_throw",
+                return_value=mock_prisma_client,
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.get_mcp_server",
+                AsyncMock(return_value=mock_server),
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.global_mcp_server_manager.health_check_server",
+                AsyncMock(return_value=mock_health_result),
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints._user_has_admin_view",
+                return_value=True,
+            ),
+        ):
+            from litellm.proxy.management_endpoints.mcp_management_endpoints import (
+                fetch_mcp_server,
+            )
+
+            result = await fetch_mcp_server(
+                request=_make_mock_request(),
+                server_id="server-ur",
+                user_api_key_dict=mock_user_auth,
+            )
+
+            assert result.credentials == {"upstream_resource": "api://audience"}
+
+    @pytest.mark.asyncio
+    async def test_fetch_single_mcp_server_strips_upstream_resource_for_non_admin(self):
+        """A non-full-admin viewer gets the whole blob nulled, including the non-secret admin config,
+        so admin-typed settings never leak to a discovery-only caller."""
+        mock_server = generate_mock_mcp_server_db_record(server_id="server-ur2", alias="UR2")
+        mock_server.credentials = {"client_secret": "top-secret", "upstream_resource": "api://audience"}
+
+        mock_prisma_client = MagicMock()
+        mock_health_result = generate_mock_mcp_server_db_record(server_id="server-ur2", alias="UR2")
+        mock_health_result.status = "healthy"
+        mock_health_result.last_health_check = datetime.now()
+        mock_health_result.health_check_error = None
+        mock_user_auth = generate_mock_user_api_key_auth(user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY)
+
+        with (
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.get_prisma_client_or_throw",
+                return_value=mock_prisma_client,
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.get_mcp_server",
+                AsyncMock(return_value=mock_server),
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.global_mcp_server_manager.health_check_server",
+                AsyncMock(return_value=mock_health_result),
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints._user_has_admin_view",
+                return_value=True,
+            ),
+        ):
+            from litellm.proxy.management_endpoints.mcp_management_endpoints import (
+                fetch_mcp_server,
+            )
+
+            result = await fetch_mcp_server(
+                request=_make_mock_request(),
+                server_id="server-ur2",
+                user_api_key_dict=mock_user_auth,
+            )
+
+            assert result.credentials is None
+
+    @pytest.mark.asyncio
     async def test_fetch_single_mcp_server_handles_missing_credentials_field(self):
         mock_server = generate_mock_mcp_server_db_record(server_id="server-2", alias="Server 2")
         # Simulate ORM object without credentials attribute (e.g., older schema)

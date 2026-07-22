@@ -178,7 +178,11 @@ if MCP_AVAILABLE:
     )
     from litellm.proxy.management_endpoints.common_utils import _user_has_admin_view
     from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
-    from litellm.types.mcp import MCPAuth, MCPCredentials
+    from litellm.types.mcp import (
+        MCP_ADMIN_CONFIG_CREDENTIAL_KEYS,
+        MCPAuth,
+        MCPCredentials,
+    )
     from litellm.types.mcp_server.mcp_server_manager import MCPServer
 
     @dataclass
@@ -473,7 +477,8 @@ if MCP_AVAILABLE:
     def _redact_mcp_credentials(
         mcp_server: LiteLLM_MCPServerTable,
     ) -> LiteLLM_MCPServerTable:
-        """Return a copy of the MCP server object with credentials removed."""
+        """Return a copy with secret credentials removed, keeping only non-secret admin config so the
+        admin form can show and clear it. Non-admin and virtual-key views strip the whole blob."""
 
         try:
             redacted_server = mcp_server.model_copy(deep=True)
@@ -481,9 +486,24 @@ if MCP_AVAILABLE:
             redacted_server = mcp_server.copy(deep=True)  # type: ignore[attr-defined]
 
         if hasattr(redacted_server, "credentials"):
-            setattr(redacted_server, "credentials", None)
+            setattr(redacted_server, "credentials", _preserved_admin_config_credentials(redacted_server.credentials))
 
         return redacted_server
+
+    def _preserved_admin_config_credentials(
+        credentials: "MCPCredentials | str | None",
+    ) -> "Dict[str, str] | None":
+        """Keep only the non-secret admin-config keys, which are stored unencrypted so they lift out
+        as plaintext from either blob shape; every secret and minted-token key is dropped."""
+        if not credentials:
+            return None
+        as_dict: Dict[str, Any] = json.loads(credentials) if isinstance(credentials, str) else dict(credentials)
+        preserved = {
+            key: value
+            for key in MCP_ADMIN_CONFIG_CREDENTIAL_KEYS
+            if isinstance((value := as_dict.get(key)), str) and value
+        }
+        return preserved or None
 
     def _redact_mcp_credentials_list(
         mcp_servers: Iterable[LiteLLM_MCPServerTable],
@@ -526,6 +546,7 @@ if MCP_AVAILABLE:
         ``[]``/``{}`` for required list/dict fields).
         """
         sanitized = _redact_mcp_credentials(mcp_server)
+        sanitized.credentials = None
         # URL is the highest-impact vector: many MCP integrations embed
         # the upstream API key directly in the path. spec_path can carry
         # similar tokens in the OpenAPI spec URL.
@@ -569,6 +590,7 @@ if MCP_AVAILABLE:
         """
 
         sanitized = _redact_mcp_credentials(mcp_server)
+        sanitized.credentials = None
 
         # Remove potentially sensitive config + identity fields.
         sanitized.url = None
